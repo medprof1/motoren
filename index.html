@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Motoren</title>
+<style>
+:root{--bg:#dfe5e8;--ink:#1c2b33;--track:#c3ccd1;--on:#f2a900;--stop:#c8372d}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px "Bahnschrift","Segoe UI",system-ui,sans-serif;
+  display:flex;flex-direction:column;gap:14px;padding:14px;user-select:none;-webkit-user-select:none;touch-action:none}
+header{display:flex;align-items:center;gap:10px}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--stop)}
+.dot.on{background:#2e9e5b}
+#status{flex:1}
+details summary{cursor:pointer;padding:6px 10px;border:1.5px solid var(--ink);border-radius:6px}
+details form{display:grid;gap:8px;margin-top:10px}
+input{font:inherit;padding:10px;border:1.5px solid var(--ink);border-radius:6px;background:#fff;color:var(--ink);user-select:text;-webkit-user-select:text;touch-action:auto}
+button{font:inherit;font-weight:700;padding:12px;border:0;border-radius:6px;background:var(--ink);color:#fff}
+#pads{flex:1;display:flex;gap:10px;min-height:0}
+.m{flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;min-width:0}
+.track{position:relative;flex:1;width:100%;max-width:90px;background:var(--track);border-radius:10px;touch-action:none;overflow:hidden}
+.track::before{content:"";position:absolute;left:0;right:0;top:50%;height:2px;background:var(--ink);opacity:.4}
+.fill{position:absolute;left:0;right:0;background:var(--on)}
+.thumb{position:absolute;left:0;right:0;height:10px;margin-top:-5px;background:var(--ink)}
+output{font-variant-numeric:tabular-nums;font-weight:700}
+#stop{background:var(--stop);font-size:20px;padding:16px}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span><span id="status">Getrennt</span>
+</header>
+<details id="cfg">
+  <summary>Verbindung</summary>
+  <form onsubmit="return false">
+    <input id="host" placeholder="Adresse:Port (xxx.emqxsl.com:8084)" autocapitalize="off" autocomplete="off">
+    <input id="user" placeholder="Benutzername" autocapitalize="off" autocomplete="off">
+    <input id="pass" type="password" placeholder="Passwort" autocomplete="off">
+    <button id="go">Verbinden</button>
+  </form>
+</details>
+<div id="pads"></div>
+<button id="stop">STOP</button>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+const N = 4, val = [0, 0, 0, 0], sent = [0, 0, 0, 0];
+const $ = id => document.getElementById(id);
+let c;
+
+$('pads').innerHTML = [...Array(N).keys()].map(i =>
+  `<div class="m"><b>Motor ${i + 1}</b>
+   <div class="track" data-i="${i}"><div class="fill"></div><div class="thumb"></div></div>
+   <output>0</output></div>`).join('');
+
+function set(i, v) {
+  val[i] = v;
+  const t = document.querySelector(`.track[data-i="${i}"]`);
+  const pos = (1 - (v + 255) / 510) * 100;
+  t.querySelector('.thumb').style.top = pos + '%';
+  const f = t.querySelector('.fill');
+  f.style.top = (v >= 0 ? pos : 50) + '%';
+  f.style.height = Math.abs(50 - pos) + '%';
+  t.parentNode.querySelector('output').textContent = v;
+}
+
+document.querySelectorAll('.track').forEach(t => {
+  const i = +t.dataset.i;
+  const move = e => {
+    const r = t.getBoundingClientRect();
+    set(i, Math.max(-255, Math.min(255, Math.round((0.5 - (e.clientY - r.top) / r.height) * 510))));
+  };
+  t.onpointerdown = e => { t.setPointerCapture(e.pointerId); move(e); };
+  t.onpointermove = e => { if (t.hasPointerCapture(e.pointerId)) move(e); };
+  t.onpointerup = t.onpointercancel = () => set(i, 0);
+  set(i, 0);
+});
+
+$('stop').onclick = () => val.forEach((_, i) => set(i, 0));
+
+setInterval(() => {
+  if (!c || !c.connected) return;
+  for (let i = 0; i < N; i++)
+    if (val[i] || sent[i]) { c.publish('motoren/' + i, String(val[i])); sent[i] = val[i]; }
+}, 250);
+
+function status(text, ok) { $('status').textContent = text; $('dot').className = 'dot' + (ok ? ' on' : ''); }
+
+function connect() {
+  const h = $('host').value.trim(), u = $('user').value.trim(), p = $('pass').value;
+  if (!h) return;
+  try { localStorage.setItem('cfg', JSON.stringify({ h, u, p })); } catch (e) {}
+  if (c) c.end(true);
+  status('Verbinde...', false);
+  c = mqtt.connect('wss://' + (h.includes(':') ? h : h + ':8884') + '/mqtt', {
+    username: u, password: p, reconnectPeriod: 2000,
+    clientId: 'web-' + Math.random().toString(16).slice(2, 8)
+  });
+  c.on('connect', () => { status('Verbunden', true); $('cfg').open = false; });
+  c.on('close', () => status('Getrennt', false));
+  c.on('error', e => status('Fehler: ' + e.message, false));
+}
+
+$('go').onclick = connect;
+
+try {
+  const s = JSON.parse(localStorage.getItem('cfg'));
+  if (s) { $('host').value = s.h; $('user').value = s.u; $('pass').value = s.p; connect(); }
+  else $('cfg').open = true;
+} catch (e) { $('cfg').open = true; }
+</script>
+</body>
+</html>
